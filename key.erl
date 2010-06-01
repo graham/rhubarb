@@ -9,18 +9,6 @@
 
 -import(dict).
 
-wait(Time) ->
-      receive
-      after
-          Time ->
-              true
-      end.
-
-get_unix_timestamp() ->
-    TS = now(),
-    calendar:datetime_to_gregorian_seconds( calendar:now_to_universal_time(TS) ) -
-        calendar:datetime_to_gregorian_seconds( {{1970,1,1},{0,0,0}} ).
-
 start(Type, Key) ->
     spawn(?MODULE, loop, [Type, Key, nil]).
 
@@ -29,18 +17,21 @@ loop(Type, Key, Value) ->
         { command, ReturnPid, Action, Data } ->
             case Type of 
                 bool ->
-                    {Response, NewValue} = data_bool:do_action(Action, Value, Data),
-                    ReturnPid ! {ok, Response};
+                    {Response, NewValue} = data_bool:do_action(Action, Value, Data);
                 binary ->
-                    {Response, NewValue} = data_binary:do_action(Action, Value, Data),
-                    ReturnPid ! {ok, Response};
+                    {Response, NewValue} = data_binary:do_action(Action, Value, Data);
                 list ->
-                    {Response, NewValue} = data_list:do_action(Action, Value, Data),
-                    ReturnPid ! {ok, Response};
+                    {Response, NewValue} = data_list:do_action(Action, Value, Data);
                 number ->
-                    {Response, NewValue} = data_number:do_action(Action, Value, Data),
+                    {Response, NewValue} = data_number:do_action(Action, Value, Data)
+            end,
+
+            case ReturnPid of 
+                nil -> ok;
+                _ ->
                     ReturnPid ! {ok, Response}
             end,
+
             loop(Type, Key, NewValue);
         { meta, ReturnPid, Action, _ } ->
             case Action of
@@ -66,10 +57,11 @@ loop(Type, Key, Value) ->
                     purge_file(Type, Key),
                     ReturnPid ! ok;
                 stop ->
-                    ok
+                    ReturnPid ! ok
             end
     end.
 
+% assistant_functions
 build_filename(Type, Key) ->
     [ "data/", atom_to_list(Type), "/", Key ].
 
@@ -92,11 +84,15 @@ action(Type, Pid, Action, Value) ->
             Response
     end.
 
+commandf(Pid, Action) ->
+    Pid ! { command, nil, Pid, Action, nil }.
+commandf(Pid, Action, Value) ->
+    Pid ! { command, nil, Pid, Action, Value }.
+
 command(Pid, Action) -> 
     action(command, Pid, Action, nil).
 command(Pid, Action, Value) -> 
     action(command, Pid, Action, Value).
-
 meta(Pid, Action) -> 
     action(meta, Pid, Action, nil).
 meta(Pid, Action, Value) -> 
@@ -106,7 +102,10 @@ operation(Pid, Action) ->
 operation(Pid, Action, Value) -> 
     action(operation, Pid, Action, Value).
 
-% Tests
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Everything Below this line is purely for testing purposes %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 basic_set_get_test() ->
     Pid = start(bool, "mykey"),
     ?assertEqual( command(Pid, get), {ok, false} ),
@@ -119,6 +118,14 @@ store_load_test() ->
     ok = operation(Pid, store),
     ok = operation(Pid, load),
     ?assertEqual( command(Pid, get), {ok, true} ).
+
+
+wait(Time) ->
+      receive
+      after
+          Time ->
+              true
+      end.
 
 purge_test() ->
     Type = bool,
