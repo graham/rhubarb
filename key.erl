@@ -63,7 +63,7 @@ loop(Type, Key, Value) ->
 
 % assistant_functions
 build_filename(Type, Key) ->
-    [ "data/", atom_to_list(Type), "/", Key ].
+    [ "storage/", atom_to_list(Type), "/", Key ].
 
 purge_file(Type, Key) ->
     ok = file:delete( build_filename(Type, Key) ).

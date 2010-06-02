@@ -1,3 +1,4 @@
+#! /usr/bin/env escript
 % Whatever!
 
 -import(data_bool).
@@ -8,33 +9,36 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+do( F, Times ) ->
+    [F() || _ <- lists:seq(1, Times)].
+
+
 main(_) ->
     make:all(),
 
 
 
-    ListOfProcs = big_spawn(20000, fun() -> 
-                                           Pid = key:start(number, "mykey"),
-                                           key:command(Pid, set, 100),
-                                           Pid 
+    ListOfProcs = big_spawn(1000, fun() -> 
+                                           Pid = key:start(list, "mykey"),
+                                           do( fun() -> key:command(Pid, lpush, 100) end, 1000),
+                                           Pid
                                    end, []),
 
     io:format("Length: ~p~n~n", [length(ListOfProcs)]),
 
 
     {Time, _} = timer:tc(lists, map, [fun(I) -> 
-                                              key:command(I, incr, 100)
+                                              key:command(I, rpush, 100)
                                       end, ListOfProcs]),
     io:format("Send: ~p~n", [Time/1000000]),
 
     {Time2, _} = timer:tc(lists, map, [fun(I) -> 
-                                              key:command(I, incr, 100000)
+                                              key:command(I, rpop, 100)
                                       end, ListOfProcs]),
     io:format("Send: ~p~n", [Time2/1000000]),
 
     {Time3, _} = timer:tc(lists, map, [fun(I) -> 
-                                              key:command(I, get),
-                                              key:command(I, decr, 100)
+                                              key:command(I, get)
                                       end, ListOfProcs]),
     io:format("Send: ~p~n", [Time3/1000000]),
 

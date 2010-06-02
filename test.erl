@@ -1,4 +1,5 @@
-% Whatever!
+#! /usr/bin/env escript
+% Whatever! 10.0
 
 -import(data_bool).
 -import(data_binary).
