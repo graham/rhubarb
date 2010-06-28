@@ -14,5 +14,8 @@
 {'data_types/data_json', [debug_info]}.
 {'data_types/data_file', [debug_info]}.
 
+% interface parsers
+{'parser_plain', [debug_info]}.
+
 % Libraries
 % {'yaml', [debug_info]}.
