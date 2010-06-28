@@ -3,67 +3,95 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -import(data_bool).
--import(data_binary).
--import(data_list).
--import(data_number).
-
 -import(dict).
 
+-include_lib("key.hrl").
+
 start(Type, Key) ->
-    spawn(?MODULE, loop, [Type, Key, nil]).
+    DefaultValue = apply(Type, default, []),
+    KeyData = #keyData{type=Type, key=Key, value=DefaultValue},
+    spawn(?MODULE, loop, [KeyData]).
 
-loop(Type, Key, Value) ->
+loop(KeyData) ->
     receive
-        { command, ReturnPid, Action, Data } ->
-            case Type of 
-                bool ->
-                    {Response, NewValue} = data_bool:do_action(Action, Value, Data);
-                binary ->
-                    {Response, NewValue} = data_binary:do_action(Action, Value, Data);
-                list ->
-                    {Response, NewValue} = data_list:do_action(Action, Value, Data);
-                number ->
-                    {Response, NewValue} = data_number:do_action(Action, Value, Data)
-            end,
+        { read, Pid } ->
+            Pid ! {ok, KeyData#keyData.key, KeyData#keyData.value},
+            loop(KeyData);
 
-            case ReturnPid of 
-                nil -> ok;
-                _ ->
-                    ReturnPid ! {ok, Response}
-            end,
-
-            loop(Type, Key, NewValue);
-        { meta, ReturnPid, Action, _ } ->
-            case Action of
-                type ->
-                    ReturnPid ! {ok, Type}
-            end,
-            loop(Type, Key, Value);
-        { operation, ReturnPid, Action, _ } ->
-            case Action of
-                store ->
-                    store_to_disk(Type, Key, Value),
-                    ReturnPid ! ok,
-                    loop(Type, Key, Value);
-                load ->
-                    NewValue = load_from_disk(Type, Key),
-                    ReturnPid ! ok,
-                    loop(Type, Key, NewValue);
-                purge ->
-                    purge_file(Type, Key),
-                    ReturnPid ! ok,
-                    loop(Type, Key, Value);
-                purge_and_stop ->
-                    purge_file(Type, Key),
-                    ReturnPid ! ok;
-                stop ->
-                    ReturnPid ! ok
-            end
+        { write, Pid, Command, Payload } ->
+            write_loop(KeyData, [{Pid, Command, Payload}], nil, nil)
     end.
 
+write_loop(KeyData, [], nil, nil) ->
+    loop(KeyData);
+
+write_loop(#keyData{safe_writes=true} = KeyData, WriteQueue, nil, nil) ->
+    [WriteJob|RestOfQueue] = WriteQueue,
+    KeyPid = self(),
+    WritePid = spawn( fun() -> run_write_func_safe(KeyPid, KeyData, WriteJob) end ),
+    NewWriteRef = erlang:monitor(process, WritePid),
+    {WaitingClientPid, _, _} = WriteJob,
+    write_loop(KeyData, RestOfQueue, NewWriteRef, WaitingClientPid);
+
+write_loop(#keyData{safe_writes=false} = KeyData, WriteQueue, nil, nil) ->
+    [WriteJob|RestOfQueue] = WriteQueue,
+    {NewValue, ClientResponse} = run_write_func_unsafe(KeyData, WriteJob),
+    {WaitingClientPid, _, _} = WriteJob,
+    
+    NewKeyData = KeyData#keyData{value = NewValue},
+    
+    case WaitingClientPid of
+        nil ->
+            ok;
+        _ ->
+            WaitingClientPid ! { ok, KeyData#keyData.key, ClientResponse }
+    end,
+    write_loop(NewKeyData, RestOfQueue, nil, nil);
+
+write_loop(KeyData, WriteQueue, WriteRef, WaitingClientPid) ->
+    receive
+        { read, Pid } ->
+            Pid ! {ok, KeyData#keyData.key, KeyData#keyData.value},
+            write_loop(KeyData, WriteQueue, WriteRef, WaitingClientPid);
+
+        { write, Pid, Command, Payload } ->
+            write_loop(KeyData, WriteQueue ++ [{Pid, Command, Payload}], WriteRef, WaitingClientPid);
+            
+        { flush_write, NewValue, ClientResponse } ->
+            NewKeyData = KeyData#keyData{value = NewValue},
+            case WaitingClientPid of
+                nil ->
+                    ok;
+                _ ->
+                    WaitingClientPid ! { ok, NewKeyData#keyData.key, ClientResponse }
+            end,
+            erlang:demonitor(WriteRef, [flush]),
+            write_loop(NewKeyData, WriteQueue, nil, nil);
+
+        { 'DOWN', WriteRef, process, Pid, Reason } ->
+            case WaitingClientPid of
+                nil ->
+                    ok;
+                _ ->
+                    WaitingClientPid ! { error, KeyData#keyData.key, Reason }
+            end,
+            erlang:demonitor(WriteRef),
+            write_loop(KeyData, WriteQueue, nil, nil)
+    end.
+
+run_write_func_unsafe(KeyData, {Pid, Command, Payload}) ->
+    {ClientResponse, NewData} = apply(KeyData#keyData.type, do_action, 
+                                      [Command, KeyData#keyData.value, Payload]),
+    {NewData, ClientResponse}.    
+        
+run_write_func_safe(KeyPid, KeyData, {Pid, Command, Payload}) ->
+    {ClientResponse, NewData} = apply(KeyData#keyData.type, do_action, 
+                                      [Command, KeyData#keyData.value, Payload]),
+    KeyPid ! { flush_write, NewData, ClientResponse }.
+    
 % assistant_functions
 build_filename(Type, Key) ->
-    [ "storage/", atom_to_list(Type), "/", Key ].
+    [ "../storage/", atom_to_list(Type), "/", Key ].
 
 purge_file(Type, Key) ->
     ok = file:delete( build_filename(Type, Key) ).
@@ -77,69 +105,102 @@ load_from_disk(Type, Key) ->
     {ok, Data} = file:read_file(build_filename(Type, Key)),
     binary_to_term(Data).
 
-action(Type, Pid, Action, Value) ->
-    Pid ! { Type, self(), Action, Value },
+read(Pid) ->
+    Pid ! { read, self() },
     receive
-        Response ->
-            Response
+        Msg ->
+            Msg
     end.
 
-commandf(Pid, Action) ->
-    Pid ! { command, nil, Pid, Action, nil }.
-commandf(Pid, Action, Value) ->
-    Pid ! { command, nil, Pid, Action, Value }.
+write(Pid, Command, Value) ->
+    Pid ! { write, self(), Command, Value },
+    receive
+        Msg ->
+            Msg
+    end.
 
-command(Pid, Action) -> 
-    action(command, Pid, Action, nil).
-command(Pid, Action, Value) -> 
-    action(command, Pid, Action, Value).
-meta(Pid, Action) -> 
-    action(meta, Pid, Action, nil).
-meta(Pid, Action, Value) -> 
-    action(meta, Pid, Action, Value).
-operation(Pid, Action) -> 
-    action(operation, Pid, Action, nil).
-operation(Pid, Action, Value) -> 
-    action(operation, Pid, Action, Value).
+blind_write(Pid, Command, Value) ->
+    Pid ! { write, nil, Command, Value }.
+    
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Everything Below this line is purely for testing purposes %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-basic_set_get_test() ->
-    Pid = start(bool, "mykey"),
-    ?assertEqual( command(Pid, get), {ok, false} ),
-    ?assertEqual( command(Pid, set, true), {ok, 1} ),
-    ?assertEqual( command(Pid, get), {ok, true} ).
+basic_read_test() ->
+    Pid = start(data_bool, "MyKey"),
+    Pid ! { read, self() },
+    receive 
+        Msg ->
+            ?assertEqual( Msg, { ok, "MyKey", false } )
+    end.
 
-store_load_test() ->
-    Pid = start(bool, "mykey"),
-    ?assertEqual( command(Pid, set, true), {ok, 1} ),
-    ok = operation(Pid, store),
-    ok = operation(Pid, load),
-    ?assertEqual( command(Pid, get), {ok, true} ).
+basic_write_test() ->
+    Pid = start(data_bool, "MyKey"),
+    Pid ! { write, self(), set, true },
+    receive
+        Msg ->
+            ?assertEqual( Msg, { ok, "MyKey", 1 } )
+    end.
 
-
-wait(Time) ->
-      receive
-      after
-          Time ->
-              true
-      end.
-
-purge_test() ->
-    Type = bool,
-    Key = "mykey",
-    Filename = build_filename(Type, Key),
-
-    Pid = start(Type, Key),
-
-    ok = operation(Pid, store),
-    {Result, _} = file:read_file_info(Filename),
-    ?assertEqual( Result, ok ),
+basic_failed_write_test() ->
+    Pid = start(data_bool, "MyKey"),
+    Pid ! { write, self(), asdf, "True" },
+    receive
+        { error, Key, Reason } ->
+            ?assertEqual( Key, "MyKey" )
+    end,
     
-    wait(20),
-    ok = operation(Pid, purge),
-    wait(20),
+    Pid ! { read, self() },
+    receive
+        Msg ->
+            ?assertEqual( Msg, { ok, "MyKey", false } )
+    end.
+        
+basic_failed_write_still_read_test() ->
+    Pid = start(data_test, "MyKey"),
+
+    Pid ! { write, self(), asdf, "True" },
+    Pid ! { read, self() },
+
+    receive
+        Msg ->
+            ?assertEqual( Msg, { ok, "MyKey", test } )
+    end,
+
+    receive
+        { error, Key, Reason } ->
+            ?assertEqual( Key, "MyKey" )
+    end.
     
-    ?assertEqual( file:read_file_info(Filename), {error, enoent} ).
+basic_blind_write_test() ->
+    Pid = start(data_test, "key"),
+    ?assertEqual( write(Pid, set, "asdf"), { ok, "key", 1 } ),
+    
+    blind_write( Pid, set, "woot"),
+    ?assertEqual( read(Pid), { ok, "key", "asdf" } ),
+    
+    receive
+        _ ->
+            ok
+    after
+        200 ->
+            ?assertEqual( read(Pid), {ok, "key", "woot"} )
+    end.
+    
+multi_blind_write_test() ->
+    Pid = start(data_test, "key"),
+    ?assertEqual( write(Pid, set, "asdf"), { ok, "key", 1 } ),
+    
+    blind_write( Pid, set, "woot"),
+    blind_write( Pid, set, "woot1"),
+    blind_write( Pid, set, "woot2"),
+    ?assertEqual( read(Pid), { ok, "key", "asdf" } ),
+    
+    receive
+        _ ->
+            ok
+    after
+        1000 ->
+            ?assertEqual( read(Pid), {ok, "key", "woot2"} )
+    end.

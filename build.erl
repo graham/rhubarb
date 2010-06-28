@@ -40,7 +40,7 @@ main(Args) ->
     io:format("Erlang Builder 0.2~n").
 
 
-add_files_to_emake(Filelist) ->
+add_files_to_emake(_Filelist) ->
     ok.
 
 % Found these nice run shell script functions here:

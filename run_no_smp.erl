@@ -1,5 +1,5 @@
 #! /usr/bin/env escript
-%%! -smp enable
+%%! -smp disable
 
 % Whatever!
 
