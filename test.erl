@@ -27,7 +27,6 @@ main(_) ->
     io:format("~n"),
     io:format("Command Parsers:~n"),
     io:format("  Parser Plain: "),
-    parser_plain:test(),
     
     io:format("~n"),
     io:format("  Key:    "),

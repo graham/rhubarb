@@ -7,7 +7,6 @@
 {'data_types/data_test', [debuf_info]}.
 
 % not tested yet.
-{'data_types/data_hash', [debug_info]}.
 {'data_types/data_set', [debug_info]}.
 {'data_types/data_scored_set', [debug_info]}.
 {'data_types/data_bitmap', [debug_info]}.

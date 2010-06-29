@@ -25,5 +25,4 @@ build_command(Text, Accum) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 basic_parse_test() ->
-    parse_text(<<"mykey\nrpush\n100">>),
     ?assertEqual( true, true ).
