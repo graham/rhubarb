@@ -23,7 +23,16 @@ loop(KeyData) ->
     end.
 
 write_loop(KeyData, [], nil, nil) ->
-    loop(KeyData);
+    receive
+        { read, Pid } ->
+            Pid ! {ok, KeyData#keyData.key, KeyData#keyData.value},
+            write_loop(KeyData, [], nil, nil);
+        { write, Pid, Command, Payload } ->
+            write_loop(KeyData, [{Pid, Command, Payload}], nil, nil)
+    after
+        0 ->
+            loop(KeyData)
+    end;
 
 write_loop(#keyData{safe_writes=true} = KeyData, WriteQueue, nil, nil) ->
     [WriteJob|RestOfQueue] = WriteQueue,
