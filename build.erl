@@ -8,14 +8,6 @@
 main(Args) ->
     io:format("Args: ~p~n", [Args]),
 
-    case lists:member("clear", Args) of
-        true ->
-            run("rm *~");
-        false ->
-            ok
-    end,
-
-
     case lists:member("clean", Args) of
         true ->
             run("rm *.beam");

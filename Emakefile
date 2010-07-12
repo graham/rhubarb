@@ -1,5 +1,6 @@
 % Basics
 {'key', [debug_info]}.
+{'diskio', [debug_info]}.
 {'data_types/data_bool', [debug_info]}.
 {'data_types/data_binary', [debug_info]}.
 {'data_types/data_list', [debug_info]}.

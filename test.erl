@@ -14,6 +14,9 @@
 
 main(_) ->
     make:all(),
+    
+    diskio:start(),
+    
     io:format("Data Types:~n"),
     io:format("  Bool:   "),
     data_bool:test(),
@@ -28,6 +31,10 @@ main(_) ->
     io:format("Command Parsers:~n"),
     io:format("  Parser Plain: "),
     
+    io:format("~n"),
+    io:format("  Disk IO:  "),
+    diskio:test(),
+
     io:format("~n"),
     io:format("  Key:    "),
     key:test().

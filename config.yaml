@@ -1,4 +1,8 @@
 storage:
   path: storage/
 
+disk:
+    write_delay: 1m
 
+event:
+    type: default

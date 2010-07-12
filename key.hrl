@@ -4,7 +4,7 @@
            value,
            safe_writes = true,
            
-           noisy_on_write = false,
+           noisy_on_change = false,
            
            last_access = 0,
            last_update = 0,
