@@ -34,7 +34,7 @@ write_loop(KeyData, KeyPidData) ->
             NewKeyPidData = KeyPidData#keyPid{ write_queue = KeyPidData#keyPid.write_queue ++ [{Pid, Command, Payload, Options}] },
             write_loop(KeyData, NewKeyPidData);
         
-        { flush_write, NewValue, ClientResponse, _Options } ->
+        { flush_write, NewValue, ClientResponse, KeyCommand, _Options } ->
             % check to see if write is still valid (anther write from a different node could have come in).
             NewKeyData = KeyData#key{value = NewValue},
 
@@ -49,7 +49,7 @@ write_loop(KeyData, KeyPidData) ->
             % write to disk if you need to.
             
             % let any listeners know that they key has changed and how.
-            NewListeners = send_update_event(KeyPidData#keyPid.listeners, {KeyData#key.key, ClientResponse}),
+            NewListeners = send_update_event(KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
 
             % if we have any blocking writes (changes) insert the first one into the pending write list.
             case length(KeyPidData#keyPid.blocked_commands) of
@@ -104,13 +104,13 @@ run_write_func_safe(KeyPid, KeyData, KeyPidData, FullCommand) ->
     {Pid, Command, Payload, Options} = FullCommand,
     case apply(KeyData#key.type, do_action, [Command, KeyData#key.value, Payload]) of
         {ClientResponse, NewData} ->
-            KeyPid ! { flush_write, NewData, ClientResponse, Options };
+            KeyPid ! { flush_write, NewData, ClientResponse, Command, Options };
         {ClientResponse, NewData, command_blocked } ->
             KeyPid ! { command_blocked, FullCommand }
     end.
 
 send_update_event(Listeners, Message) ->
-    io:format("Sending to listeners: ~p:~p~n", [Listeners, Message]),
+    %io:format("Sending to listeners: ~p:~p~n", [Listeners, Message]),
     lists:foreach( fun(Element) ->
         Element ! { rhubarb_key_event, Message }
     end, Listeners),
@@ -238,7 +238,7 @@ events_on_change_test() ->
     
     Event = receive_event(),
     
-    ?assertEqual( {"key", 3}, Event ).
+    ?assertEqual( {"key", data_list, rpush, 3}, Event ).
     
 blocking_write_test() ->
     Pid = start(data_list, "key"),
