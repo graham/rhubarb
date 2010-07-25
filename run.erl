@@ -25,7 +25,7 @@ run_and_time(Command, Func, ListOfProcs) ->
 main(_) ->
     make:all(),
 
-    ListOfProcs = big_spawn(5000, fun() -> 
+    ListOfProcs = big_spawn(500, fun() -> 
                                            Pid = key:start(data_list, "mykey"),
                                            do( fun() -> key:write(Pid, lpush, 200) end, 100),
                                            Pid

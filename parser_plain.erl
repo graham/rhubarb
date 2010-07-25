@@ -14,7 +14,8 @@ build_command(Text, Accum) ->
         1 ->
             Accum;
         _ ->
-            build_command(Rest, Accum ++ [Token])
+            % build_command(Rest, Accum ++ [Token])
+            ok
     end.
     
     

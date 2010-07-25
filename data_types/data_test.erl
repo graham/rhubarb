@@ -18,7 +18,7 @@ do_action(Action, OldValue, Data) ->
                 nothing ->
                     ok
             after 
-                100 ->
+                50 ->
                     ok
             end,
 

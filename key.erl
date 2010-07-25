@@ -9,80 +9,113 @@
 
 start(Type, Key) ->
     DefaultValue = apply(Type, default, []),
-    KeyData = #keyData{type=Type, key=Key, value=DefaultValue},
-    spawn(?MODULE, write_loop, [KeyData, [], nil, nil]).
+    KeyData = #key{type=Type, key=Key, value=DefaultValue},
+    KeyPidData = #keyPid{listeners=[]},
+    spawn(?MODULE, write_loop, [KeyData, KeyPidData]).
 
-write_loop(#keyData{safe_writes=true} = KeyData, WriteQueue, nil, nil) when length(WriteQueue) > 0 ->
-    [WriteJob|RestOfQueue] = WriteQueue,
+write_loop( #key{safe_writes=true} = KeyData, 
+            #keyPid{ write_ref = nil, waiting_client_pid = nil } = KeyPidData) 
+            when length(KeyPidData#keyPid.write_queue) > 0 ->
+                
+    [WriteJob|RestOfQueue] = KeyPidData#keyPid.write_queue,
     KeyPid = self(),
-    WritePid = spawn( fun() -> run_write_func_safe(KeyPid, KeyData, WriteJob) end ),
+    WritePid = spawn( fun() -> run_write_func_safe(KeyPid, KeyData, KeyPidData, WriteJob) end ),
     NewWriteRef = erlang:monitor(process, WritePid),
     {WaitingClientPid, _, _, _} = WriteJob,
-    write_loop(KeyData, RestOfQueue, NewWriteRef, WaitingClientPid);
-
-write_loop(#keyData{safe_writes=false} = KeyData, WriteQueue, nil, nil) when length(WriteQueue) > 0 ->
-    [WriteJob|RestOfQueue] = WriteQueue,
-    {NewValue, ClientResponse, Options} = run_write_func_unsafe(KeyData, WriteJob),
-    {WaitingClientPid, _, _, _} = WriteJob,
-    
-    NewKeyData = KeyData#keyData{value = NewValue},
-    
-    case WaitingClientPid of
-        nil ->
-            ok;
-        _ ->
-            WaitingClientPid ! { ok, KeyData#keyData.key, ClientResponse }
-    end,
-    write_loop(NewKeyData, RestOfQueue, nil, nil);
-
-write_loop(KeyData, WriteQueue, WriteRef, WaitingClientPid) ->
+    write_loop(KeyData, KeyPidData#keyPid{ write_queue = RestOfQueue, write_ref = NewWriteRef, waiting_client_pid = WaitingClientPid});
+ 
+write_loop(KeyData, KeyPidData) ->
     receive
         { read, Pid, _Options } ->
-            Pid ! {ok, KeyData#keyData.key, KeyData#keyData.value},
-            write_loop(KeyData, WriteQueue, WriteRef, WaitingClientPid);
+            Pid ! { self(), {ok, KeyData#key.key, KeyData#key.value} },
+            write_loop(KeyData, KeyPidData);
 
         { write, Pid, Command, Payload, Options } ->
-            write_loop(KeyData, WriteQueue ++ [{Pid, Command, Payload, Options}], WriteRef, WaitingClientPid);
-            
+            NewKeyPidData = KeyPidData#keyPid{ write_queue = KeyPidData#keyPid.write_queue ++ [{Pid, Command, Payload, Options}] },
+            write_loop(KeyData, NewKeyPidData);
+        
         { flush_write, NewValue, ClientResponse, _Options } ->
-            % here is where you can distribute to other nodes, and do checks to make sure you can write.
-            
-            
-            NewKeyData = KeyData#keyData{value = NewValue},
-            case WaitingClientPid of
+            % check to see if write is still valid (anther write from a different node could have come in).
+            NewKeyData = KeyData#key{value = NewValue},
+
+            % check to see if a client is waiting for this write to finish.
+            case KeyPidData#keyPid.waiting_client_pid of
                 nil ->
                     ok;
                 _ ->
-                    WaitingClientPid ! { ok, NewKeyData#keyData.key, ClientResponse }
+                    KeyPidData#keyPid.waiting_client_pid ! { self(), {ok, KeyData#key.key, ClientResponse} }
             end,
-            erlang:demonitor(WriteRef, [flush]),
-            write_loop(NewKeyData, WriteQueue, nil, nil);
+            erlang:demonitor(KeyPidData#keyPid.write_ref, [flush]),
+            % write to disk if you need to.
+            
+            % let any listeners know that they key has changed and how.
+            NewListeners = send_update_event(KeyPidData#keyPid.listeners, {KeyData#key.key, ClientResponse}),
+
+            % if we have any blocking writes (changes) insert the first one into the pending write list.
+            case length(KeyPidData#keyPid.blocked_commands) of
+                0 ->
+                    % cleanup the waiting client if they existed.
+                    NewKeyPidData = KeyPidData#keyPid{ listeners = NewListeners, write_ref = nil, waiting_client_pid = nil },
+                    write_loop(NewKeyData, NewKeyPidData);
+                _ ->
+                    [HeadBlockedCommand|RestBlockedCommand] = KeyPidData#keyPid.blocked_commands,
+                    NewWriteQueue = [HeadBlockedCommand] ++ KeyPidData#keyPid.write_queue,
+                    NewKeyPidData = KeyPidData#keyPid{ write_queue = NewWriteQueue, blocked_commands = RestBlockedCommand,
+                                                       listeners = NewListeners, write_ref = nil, waiting_client_pid = nil },
+                    write_loop(NewKeyData, NewKeyPidData)
+            end;
             
         { 'DOWN', WriteRef, process, Pid, Reason } ->
-            case WaitingClientPid of
+            case KeyPidData#keyPid.waiting_client_pid of
                 nil ->
                     ok;
                 _ ->
-                    WaitingClientPid ! { error, KeyData#keyData.key, Reason }
+                    KeyPidData#keyPid.waiting_client_pid ! { self(), {error, KeyData#key.key, Reason} }
             end,
-            erlang:demonitor(WriteRef),
-            write_loop(KeyData, WriteQueue, nil, nil);
-        
+            erlang:demonitor(KeyPidData#keyPid.write_ref),
+            NewKeyPidData = KeyPidData#keyPid{ write_ref = nil, waiting_client_pid = nil },
+            write_loop(KeyData, NewKeyPidData);
+            
+        { command_blocked, FullCommand } ->
+            erlang:demonitor(KeyPidData#keyPid.write_ref, [flush]),
+            NewKeyPidData = KeyPidData#keyPid{ blocked_commands = lists:append(KeyPidData#keyPid.blocked_commands, [ FullCommand ]),
+                                               write_ref = nil, waiting_client_pid = nil },
+            write_loop(KeyData, NewKeyPidData);
+
         { flush_to_disk, ReturnPid, _Options } ->
-            local_disk_io ! { write, ReturnPid, KeyData#keyData.type, KeyData#keyData.key, KeyData#keyData.value, [] },
-            write_loop(KeyData, WriteQueue, WriteRef, WaitingClientPid)
+            local_disk_io ! { write, ReturnPid, KeyData#key.type, KeyData#key.key, KeyData#key.value, [] },
+            write_loop(KeyData, KeyPidData);
+        
+        { add_listener, Listener, _Options } ->
+            NewKeyPidData = KeyPidData#keyPid{ listeners = KeyPidData#keyPid.listeners ++ [Listener] },
+            write_loop(KeyData, NewKeyPidData);
+            
+        { remove_listener, Listener, _Options } ->
+            NewKeyPidData = KeyPidData#keyPid{ listeners = lists:delete(Listener, KeyPidData#keyPid.listeners) },
+            write_loop(KeyData, NewKeyPidData);
+            
+        { debug, Pid } ->
+            Pid ! {debug, KeyData, KeyPidData},
+            write_loop(KeyData, KeyPidData)
     end.
 
-run_write_func_unsafe(KeyData, {Pid, Command, Payload, Options}) ->
-    {ClientResponse, NewData} = apply(KeyData#keyData.type, do_action, 
-                                      [Command, KeyData#keyData.value, Payload]),
-    {NewData, ClientResponse, Options}.    
-        
-run_write_func_safe(KeyPid, KeyData, {Pid, Command, Payload, Options}) ->
-    {ClientResponse, NewData} = apply(KeyData#keyData.type, do_action, 
-                                      [Command, KeyData#keyData.value, Payload]),
-    KeyPid ! { flush_write, NewData, ClientResponse, Options }.
+                
+run_write_func_safe(KeyPid, KeyData, KeyPidData, FullCommand) ->
+    {Pid, Command, Payload, Options} = FullCommand,
+    case apply(KeyData#key.type, do_action, [Command, KeyData#key.value, Payload]) of
+        {ClientResponse, NewData} ->
+            KeyPid ! { flush_write, NewData, ClientResponse, Options };
+        {ClientResponse, NewData, command_blocked } ->
+            KeyPid ! { command_blocked, FullCommand }
+    end.
+
+send_update_event(Listeners, Message) ->
+    io:format("Sending to listeners: ~p:~p~n", [Listeners, Message]),
+    lists:foreach( fun(Element) ->
+        Element ! { rhubarb_key_event, Message }
+    end, Listeners),
     
+    Listeners.
 
 read(Pid) ->
     read(Pid, []).
@@ -90,9 +123,12 @@ read(Pid) ->
 read(Pid, Options) ->
     Pid ! { read, self(), Options },
     receive
-        Msg ->
+        {Pid, Msg} ->
             Msg
     end.
+
+write(Pid, Command) ->
+    write(Pid, Command, nil).
 
 write(Pid, Command, Value) ->
     write(Pid, Command, Value, []).
@@ -100,7 +136,7 @@ write(Pid, Command, Value) ->
 write(Pid, Command, Value, Options) ->
     Pid ! { write, self(), Command, Value, Options },
     receive
-        Msg ->
+        {Pid, Msg} ->
             Msg
     end.
 
@@ -110,6 +146,17 @@ blind_write(Pid, Command, Value) ->
 blind_write(Pid, Command, Value, Options) ->
     Pid ! { write, nil, Command, Value, Options}.
 
+add_listener(Pid, Listener) ->
+    Pid ! { add_listener, Listener, nil}.
+
+remove_listener(Pid, Listener) ->
+    Pid ! { remove_listener, Listener, nil}.
+    
+receive_event() ->
+    receive 
+        { rhubarb_key_event, Msg } ->
+            Msg
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Everything Below this line is purely for testing purposes %
@@ -120,7 +167,7 @@ basic_read_test() ->
     Pid ! { read, self(), [] },
     receive 
         Msg ->
-            ?assertEqual( Msg, { ok, "MyKey", false } )
+            ?assertEqual( Msg, { Pid, {ok, "MyKey", false} } )
     end.
 
 basic_write_test() ->
@@ -128,7 +175,7 @@ basic_write_test() ->
     Pid ! { write, self(), set, true, [] },
     receive
         Msg ->
-            ?assertEqual( Msg, { ok, "MyKey", 1 } )
+            ?assertEqual( Msg, { Pid, {ok, "MyKey", 1} } )
     end.
 
 basic_failed_write_test() ->
@@ -147,8 +194,8 @@ basic_blind_write_test() ->
     ?assertEqual( read(Pid), { ok, "key", "asdf" } ),
     
     receive
-        _ ->
-            ok
+        Msg ->
+            io:format("Blind Message: ~p~n", [Msg])
     after
         200 ->
             ?assertEqual( read(Pid), {ok, "key", "woot"} )
@@ -167,7 +214,7 @@ multi_blind_write_test() ->
         _ ->
             ok
     after
-        1000 ->
+        500 ->
             ?assertEqual( read(Pid), {ok, "key", "woot2"} )
     end.
 
@@ -178,3 +225,28 @@ failed_write_still_read_test() ->
     write(Pid, adsf, "blarg"),
     
     ?assertEqual( read(Pid), {ok, "key", "woot"} ).
+    
+events_on_change_test() ->
+    Pid = start(data_list, "key"),
+    
+    write(Pid, rpush, 111),
+    write(Pid, rpush, 222),
+    
+    add_listener(Pid, self()),
+    
+    write(Pid, rpush, 333),
+    
+    Event = receive_event(),
+    
+    ?assertEqual( {"key", 3}, Event ).
+    
+blocking_write_test() ->
+    Pid = start(data_list, "key"),
+    
+    spawn( fun() ->
+        Value = write(Pid, brpop),
+        ?assertEqual( {ok, "key", 111}, Value)
+    end ),
+    
+    write(Pid, rpush, 111).
+

@@ -1,10 +1,8 @@
--record( keyData, {
+-record( key, {
            type,
            key,
            value,
            safe_writes = true,
-           
-           noisy_on_change = false,
            
            last_access = 0,
            last_update = 0,
@@ -13,3 +11,11 @@
            flushed_after = -1
            }).
            
+-record( keyPid, {
+    write_queue = [],
+    write_ref = nil, 
+    waiting_client_pid = nil,
+    listeners = [],
+    blocked_commands = []
+}).
+

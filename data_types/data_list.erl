@@ -23,6 +23,16 @@ do_action(Action, OldValue, Data) ->
                     {NewData, Split} = {[], nil}
             end,
             {Split, NewData};
+        brpop ->
+            Length = length(OldValue),
+            case Length of
+                _ when Length > 0 ->
+                    {NewData, [Split]} = lists:split(Length - 1, OldValue),
+                    {Split, NewData};
+                0 ->
+                    {NewData, Split} = {[], nil},
+                    {Split, NewData, command_blocked}
+            end;
         lpush ->
             NewData = lists:append(lists:flatten([Data]), OldValue),
             {length(NewData), NewData};
@@ -35,6 +45,16 @@ do_action(Action, OldValue, Data) ->
                     {NewData, Split} = {[], nil}
             end,
             {Split, NewData};
+        blpop ->
+            Length = length(OldValue),
+            case Length of
+                _ when Length > 0 ->
+                    {[Split], NewData} = lists:split(1, OldValue),
+                    {Split, NewData};
+                0 ->
+                    {NewData, Split} = {[], nil},
+                    {Split, NewData, command_blocked}
+            end;
         length ->
             {length(OldValue), OldValue};
         range ->
@@ -77,3 +97,8 @@ list_length_test() ->
 list_range_test() ->
     ?assertEqual( do_action(range, [1,2,3,4,5,6], { 2,4 }), {[3,4], [1,2,3,4,5,6]} ),
     ?assertEqual( do_action(range, [1,2,3,4,5,6], { 1,5 }), {[2,3,4,5], [1,2,3,4,5,6]} ).
+
+list_blocking_test() ->
+    ?assertEqual( do_action(blpop, [], nil), {nil, [], command_blocked} ),
+    ?assertEqual( do_action(brpop, [], nil), {nil, [], command_blocked} ).
+    
