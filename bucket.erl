@@ -29,13 +29,18 @@ read(Bucket, Key) ->
     Pid = get(Bucket, Key),
     key:read(Pid).
     
-q(Bucket, Key, Action) ->
+write(Bucket, Key, Action) ->
     Pid = get(Bucket, Key),
     key:write(Pid, Action).
     
-q(Bucket, Key, Action, Args) ->
+write(Bucket, Key, Action, Args) ->
     Pid = get(Bucket, Key),
     key:write(Pid, Action, Args).
+    
+search(Bucket, Key, Action, Args) ->
+    Pid = get(Bucket, Key),
+    key:key_query(Pid, Action, Args).
+    
     
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
