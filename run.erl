@@ -26,7 +26,7 @@ run_and_time(Command, Func, ListOfProcs) ->
 main(_) ->
     make:all(),
 
-    RunCount = 500,
+    RunCount = 1000,
 
     ListOfProcs = big_spawn(RunCount, fun(Count) -> 
                                            Pid = key:start(data_list, "mykey"),

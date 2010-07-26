@@ -67,6 +67,16 @@ do_action(Action, OldValue, Data) ->
             {OldValue, Data}
     end.
 
+do_query(Action, OldValue, Data) ->
+    case Action of 
+        max ->
+            lists:max(OldValue);
+        min ->
+            lists:min(OldValue);
+        sum ->
+            lists:sum(OldValue)
+    end.
+
 % Tests to prove that it works.
 list_get_set_test() ->
     ?assertEqual( do_action(get, [1], nil), {[1], [1]} ),
@@ -101,4 +111,10 @@ list_range_test() ->
 list_blocking_test() ->
     ?assertEqual( do_action(blpop, [], nil), {nil, [], command_blocked} ),
     ?assertEqual( do_action(brpop, [], nil), {nil, [], command_blocked} ).
+    
+list_query_test() ->
+    ?assertEqual( do_query(max, [1,2,3], nil), 3 ),
+    ?assertEqual( do_query(min, [1,2,3], nil), 1 ),
+    ?assertEqual( do_query(sum, [1,2,3], nil), 6 ).
+
     

@@ -13,7 +13,7 @@ start(Type, Key) ->
     KeyPidData = #keyPid{listeners=[]},
     spawn(?MODULE, write_loop, [KeyData, KeyPidData]).
 
-write_loop( #key{safe_writes=true} = KeyData, 
+write_loop( KeyData, 
             #keyPid{ write_ref = nil, waiting_client_pid = nil } = KeyPidData) 
             when length(KeyPidData#keyPid.write_queue) > 0 ->
                 
@@ -27,7 +27,11 @@ write_loop( #key{safe_writes=true} = KeyData,
 write_loop(KeyData, KeyPidData) ->
     receive
         { read, Pid, _Options } ->
-            Pid ! { self(), {ok, KeyData#key.key, KeyData#key.value} },
+            Pid ! { rhubarb_response, KeyData#key.key, {ok, KeyData#key.value} },
+            write_loop(KeyData, KeyPidData);
+            
+        { key_query, Pid, Command, Payload, _Options } ->
+            spawn( fun() -> run_query(Pid, self(), KeyData, Command, Payload) end ),
             write_loop(KeyData, KeyPidData);
 
         { write, Pid, Command, Payload, Options } ->
@@ -43,13 +47,13 @@ write_loop(KeyData, KeyPidData) ->
                 nil ->
                     ok;
                 _ ->
-                    KeyPidData#keyPid.waiting_client_pid ! { self(), {ok, KeyData#key.key, ClientResponse} }
+                    KeyPidData#keyPid.waiting_client_pid ! { rhubarb_response, KeyData#key.key, {ok, ClientResponse} }
             end,
             erlang:demonitor(KeyPidData#keyPid.write_ref, [flush]),
             % write to disk if you need to.
             
             % let any listeners know that they key has changed and how.
-            NewListeners = send_update_event(KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
+            NewListeners = send_update_event(self(), KeyData, KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
 
             % if we have any blocking writes (changes) insert the first one into the pending write list.
             case length(KeyPidData#keyPid.blocked_commands) of
@@ -65,12 +69,12 @@ write_loop(KeyData, KeyPidData) ->
                     write_loop(NewKeyData, NewKeyPidData)
             end;
             
-        { 'DOWN', WriteRef, process, Pid, Reason } ->
+        { 'DOWN', _WriteRef, process, _Pid, Reason } ->
             case KeyPidData#keyPid.waiting_client_pid of
                 nil ->
                     ok;
                 _ ->
-                    KeyPidData#keyPid.waiting_client_pid ! { self(), {error, KeyData#key.key, Reason} }
+                    KeyPidData#keyPid.waiting_client_pid ! { rhubarb_response, KeyData#key.key, {error, Reason} }
             end,
             erlang:demonitor(KeyPidData#keyPid.write_ref),
             NewKeyPidData = KeyPidData#keyPid{ write_ref = nil, waiting_client_pid = nil },
@@ -98,65 +102,102 @@ write_loop(KeyData, KeyPidData) ->
             Pid ! {debug, KeyData, KeyPidData},
             write_loop(KeyData, KeyPidData)
     end.
-
                 
-run_write_func_safe(KeyPid, KeyData, KeyPidData, FullCommand) ->
-    {Pid, Command, Payload, Options} = FullCommand,
+run_write_func_safe(KeyPid, KeyData, _KeyPidData, FullCommand) ->
+    {_Pid, Command, Payload, Options} = FullCommand,
     case apply(KeyData#key.type, do_action, [Command, KeyData#key.value, Payload]) of
         {ClientResponse, NewData} ->
             KeyPid ! { flush_write, NewData, ClientResponse, Command, Options };
-        {ClientResponse, NewData, command_blocked } ->
+        {_ClientResponse, _NewData, command_blocked } ->
             KeyPid ! { command_blocked, FullCommand }
     end.
+    
+run_query(ClientPid, _KeyPid, KeyData, Command, Payload) ->
+    MyPid = self(),
+    QueryPid = spawn( fun() ->
+                        Result = apply(KeyData#key.type, do_query, [Command, KeyData#key.value, Payload]),
+                        MyPid ! { query_result, Result }
+                      end),
+    WriteRef = erlang:monitor(process, QueryPid),
 
-send_update_event(Listeners, Message) ->
-    %io:format("Sending to listeners: ~p:~p~n", [Listeners, Message]),
+    receive
+        { 'DOWN', WriteRef, process, _Pid, Reason } ->
+            erlang:demonitor(WriteRef, [flush]),
+            ClientPid ! { rhubarb_query_result, KeyData#key.key, {error, Reason} };
+        { query_result, Result } ->
+            erlang:demonitor(WriteRef, [flush]),
+            ClientPid ! { rhubarb_query_result, KeyData#key.key, {ok, Result} }
+    end.
+
+
+send_update_event(_KeyPid, KeyData, Listeners, Message) ->
     lists:foreach( fun(Element) ->
-        Element ! { rhubarb_key_event, Message }
+        Element ! { rhubarb_key_event, KeyData#key.key, Message }
     end, Listeners),
     
     Listeners.
 
-read(Pid) ->
-    read(Pid, []).
-
-read(Pid, Options) ->
-    Pid ! { read, self(), Options },
-    receive
-        {Pid, Msg} ->
+receive_event() ->
+    receive 
+        { rhubarb_key_event, _Key, Msg } ->
             Msg
     end.
+
+receive_response() ->
+    receive
+        { rhubarb_response, _Key, {ok, Msg} } ->
+            Msg;
+        { rhubarb_response, _Key, {error, _Reason} } ->
+            error
+    end.
+    
+receive_query() ->
+    receive 
+        { rhubarb_query_result, _Key, {ok, Result} } ->
+            Result;
+        { rhubarb_query_result, _Key, {error, _Reason} } ->
+            error
+    end.
+
+read(Pid) ->
+    read(Pid, []).
+read(Pid, Options) ->
+    Pid ! { read, self(), Options },
+    receive_response().
 
 write(Pid, Command) ->
     write(Pid, Command, nil).
-
 write(Pid, Command, Value) ->
     write(Pid, Command, Value, []).
-    
 write(Pid, Command, Value, Options) ->
     Pid ! { write, self(), Command, Value, Options },
-    receive
-        {Pid, Msg} ->
-            Msg
-    end.
-
+    receive_response().
+    
+write_nw(Pid, Command) ->
+    write_nw(Pid, Command, nil).
+write_nw(Pid, Command, Value) ->
+    write_nw(Pid, Command, Value, []).
+write_nw(Pid, Command, Value, Options) ->
+    Pid ! { write, self(), Command, Value, Options }.
+    
 blind_write(Pid, Command, Value) ->
     blind_write(Pid, Command, Value, []).
-    
 blind_write(Pid, Command, Value, Options) ->
     Pid ! { write, nil, Command, Value, Options}.
-
+    
 add_listener(Pid, Listener) ->
     Pid ! { add_listener, Listener, nil}.
-
 remove_listener(Pid, Listener) ->
     Pid ! { remove_listener, Listener, nil}.
     
-receive_event() ->
-    receive 
-        { rhubarb_key_event, Msg } ->
-            Msg
-    end.
+key_query(Pid, Command) ->
+    key_query(Pid, Command, nil).
+key_query(Pid, Command, Value) ->
+    key_query(Pid, Command, Value, nil).
+key_query(Pid, Command, Value, Options) ->
+    Pid ! { key_query, self(), Command, Value, Options },
+    receive_query().
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Everything Below this line is purely for testing purposes %
@@ -167,7 +208,7 @@ basic_read_test() ->
     Pid ! { read, self(), [] },
     receive 
         Msg ->
-            ?assertEqual( Msg, { Pid, {ok, "MyKey", false} } )
+            ?assertEqual( Msg, { rhubarb_response, "MyKey", {ok, false} } )
     end.
 
 basic_write_test() ->
@@ -175,47 +216,47 @@ basic_write_test() ->
     Pid ! { write, self(), set, true, [] },
     receive
         Msg ->
-            ?assertEqual( Msg, { Pid, {ok, "MyKey", 1} } )
+            ?assertEqual( Msg, { rhubarb_response, "MyKey", {ok, 1} } )
     end.
 
 basic_failed_write_test() ->
     Pid = start(data_bool, "MyKey"),
     Result = write(Pid, set, false),
-    ?assertEqual( Result, { ok, "MyKey", 1} ),
+    ?assertEqual( Result, 1 ),
     
     Result2 = read(Pid),
-    ?assertEqual( Result2, {ok, "MyKey", false} ).
+    ?assertEqual( Result2, false ).
     
 basic_blind_write_test() ->
     Pid = start(data_test, "key"),
-    ?assertEqual( write(Pid, set, "asdf"), { ok, "key", 1 } ),
+    ?assertEqual( write(Pid, set, "asdf"), 1 ),
     
     blind_write( Pid, set, "woot"),
-    ?assertEqual( read(Pid), { ok, "key", "asdf" } ),
+    ?assertEqual( read(Pid), "asdf" ),
     
     receive
         Msg ->
             io:format("Blind Message: ~p~n", [Msg])
     after
         200 ->
-            ?assertEqual( read(Pid), {ok, "key", "woot"} )
+            ?assertEqual( read(Pid), "woot" )
     end.
     
 multi_blind_write_test() ->
     Pid = start(data_test, "key"),
-    ?assertEqual( write(Pid, set, "asdf"), { ok, "key", 1 } ),
+    ?assertEqual( write(Pid, set, "asdf"), 1 ),
     
     blind_write( Pid, set, "woot"),
     blind_write( Pid, set, "woot1"),
     blind_write( Pid, set, "woot2"),
-    ?assertEqual( read(Pid), { ok, "key", "asdf" } ),
+    ?assertEqual( read(Pid), "asdf" ),
     
     receive
         _ ->
             ok
     after
         500 ->
-            ?assertEqual( read(Pid), {ok, "key", "woot2"} )
+            ?assertEqual( read(Pid), "woot2" )
     end.
 
 failed_write_still_read_test() ->
@@ -224,20 +265,16 @@ failed_write_still_read_test() ->
     write(Pid, set, "woot"),
     write(Pid, adsf, "blarg"),
     
-    ?assertEqual( read(Pid), {ok, "key", "woot"} ).
+    ?assertEqual( read(Pid), "woot" ).
     
 events_on_change_test() ->
     Pid = start(data_list, "key"),
-    
     write(Pid, rpush, 111),
     write(Pid, rpush, 222),
     
     add_listener(Pid, self()),
-    
     write(Pid, rpush, 333),
-    
     Event = receive_event(),
-    
     ?assertEqual( {"key", data_list, rpush, 3}, Event ).
     
 blocking_write_test() ->
@@ -245,8 +282,14 @@ blocking_write_test() ->
     
     spawn( fun() ->
         Value = write(Pid, brpop),
-        ?assertEqual( {ok, "key", 111}, Value)
+        ?assertEqual( 111, Value)
     end ),
     
     write(Pid, rpush, 111).
+
+run_query_test() ->
+    Pid = start(data_list, "key"),
+    lists:foreach( fun(Element) -> write(Pid, rpush, Element) end, [1,2,3,4,5] ),
+    Result = key_query(Pid, max),
+    ?assertEqual( Result, 5 ).
 

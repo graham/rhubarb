@@ -5,6 +5,7 @@
 -import(data_binary).
 -import(data_list).
 -import(data_number).
+-import(bucket).
 
 -import(parser_plain).
 
@@ -32,8 +33,8 @@ main(_) ->
     io:format("  Parser Plain: "),
     
     io:format("~n"),
-    io:format("  Disk IO:  "),
-    diskio:test(),
+    io:format("  Bucket: "),
+    bucket:test(),
 
     io:format("~n"),
     io:format("  Key:    "),

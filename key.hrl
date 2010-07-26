@@ -2,8 +2,7 @@
            type,
            key,
            value,
-           safe_writes = true,
-           
+
            last_access = 0,
            last_update = 0,
            
