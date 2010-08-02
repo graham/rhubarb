@@ -53,7 +53,7 @@ write_loop(KeyData, KeyPidData) ->
             % write to disk if you need to.
             
             % let any listeners know that they key has changed and how.
-            NewListeners = send_update_event(self(), KeyData, KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
+            NewListeners = [], %send_update_event(self(), KeyData, KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
 
             % if we have any blocking writes (changes) insert the first one into the pending write list.
             case length(KeyPidData#keyPid.blocked_commands) of

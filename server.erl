@@ -10,15 +10,18 @@ listen(Port) ->
 
 accept(Socket) ->
     {ok, ClientSocket} = gen_tcp:accept(Socket),
+    io:format("Connection Opened ~p.~n", [ClientSocket]),
     spawn( fun() -> handle_client_socket(ClientSocket) end ),
     accept(Socket).
 
-handle_client_socket(ClientSocket) ->
+handle_client_socket(Socket) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Data} ->
             gen_tcp:send(Socket, Data),
-            handle_client_socket(ClientSocket);
+            handle_client_socket(Socket);
         {error, closed} ->
-            ok
+            io:format("Connection Closed ~p.~n", [Socket])
     end.
 
+main(_) ->
+    Server = listen(8000).

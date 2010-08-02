@@ -21,12 +21,14 @@ run_and_time(Command, Func, ListOfProcs) ->
     Estimate = (1.0 / Mili) * length(ListOfProcs),
     
     io:format("Command: ~s\tTime: ~p \tEstimate Per Second: ~.2f~n", [Command, Mili, Estimate]),
-    wait(1000).
+    wait(100).
 
 main(_) ->
     make:all(),
+    doit().
 
-    RunCount = 500,
+doit() ->
+    RunCount = 1000,
 
     ListOfProcs = big_spawn(RunCount, fun(Count) -> 
                                            Pid = key:start(data_list, "mykey"),
