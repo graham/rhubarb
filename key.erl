@@ -26,14 +26,14 @@ write_loop( KeyData,
  
 write_loop(KeyData, KeyPidData) ->
     receive
-        { read, Pid, _Options } ->
-            Pid ! { rhubarb_response, KeyData#key.key, {ok, KeyData#key.value} },
-            write_loop(KeyData, KeyPidData);
-            
         { key_query, Pid, Command, Payload, _Options } ->
             spawn( fun() -> run_query(Pid, self(), KeyData, Command, Payload) end ),
             write_loop(KeyData, KeyPidData);
 
+        { read, Pid, _Options } ->
+            Pid ! { rhubarb_response, KeyData#key.key, {ok, KeyData#key.value} },
+            write_loop(KeyData, KeyPidData);
+            
         { write, Pid, Command, Payload, Options } ->
             NewKeyPidData = KeyPidData#keyPid{ write_queue = KeyPidData#keyPid.write_queue ++ [{Pid, Command, Payload, Options}] },
             write_loop(KeyData, NewKeyPidData);
@@ -53,19 +53,18 @@ write_loop(KeyData, KeyPidData) ->
             % write to disk if you need to.
             
             % let any listeners know that they key has changed and how.
-            NewListeners = [], %send_update_event(self(), KeyData, KeyPidData#keyPid.listeners, {KeyData#key.key, KeyData#key.type, KeyCommand, ClientResponse}),
 
             % if we have any blocking writes (changes) insert the first one into the pending write list.
             case length(KeyPidData#keyPid.blocked_commands) of
                 0 ->
                     % cleanup the waiting client if they existed.
-                    NewKeyPidData = KeyPidData#keyPid{ listeners = NewListeners, write_ref = nil, waiting_client_pid = nil },
+                    NewKeyPidData = KeyPidData#keyPid{ listeners = [], write_ref = nil, waiting_client_pid = nil },
                     write_loop(NewKeyData, NewKeyPidData);
                 _ ->
                     [HeadBlockedCommand|RestBlockedCommand] = KeyPidData#keyPid.blocked_commands,
                     NewWriteQueue = [HeadBlockedCommand] ++ KeyPidData#keyPid.write_queue,
                     NewKeyPidData = KeyPidData#keyPid{ write_queue = NewWriteQueue, blocked_commands = RestBlockedCommand,
-                                                       listeners = NewListeners, write_ref = nil, waiting_client_pid = nil },
+                                                       listeners = [], write_ref = nil, waiting_client_pid = nil },
                     write_loop(NewKeyData, NewKeyPidData)
             end;
             
@@ -90,14 +89,6 @@ write_loop(KeyData, KeyPidData) ->
             local_disk_io ! { write, ReturnPid, KeyData#key.type, KeyData#key.key, KeyData#key.value, [] },
             write_loop(KeyData, KeyPidData);
         
-        { add_listener, Listener, _Options } ->
-            NewKeyPidData = KeyPidData#keyPid{ listeners = KeyPidData#keyPid.listeners ++ [Listener] },
-            write_loop(KeyData, NewKeyPidData);
-            
-        { remove_listener, Listener, _Options } ->
-            NewKeyPidData = KeyPidData#keyPid{ listeners = lists:delete(Listener, KeyPidData#keyPid.listeners) },
-            write_loop(KeyData, NewKeyPidData);
-            
         { debug, Pid } ->
             Pid ! {debug, KeyData, KeyPidData},
             write_loop(KeyData, KeyPidData)
@@ -129,13 +120,6 @@ run_query(ClientPid, _KeyPid, KeyData, Command, Payload) ->
             ClientPid ! { rhubarb_query_result, KeyData#key.key, {ok, Result} }
     end.
 
-
-send_update_event(_KeyPid, KeyData, Listeners, Message) ->
-    lists:foreach( fun(Element) ->
-        Element ! { rhubarb_key_event, KeyData#key.key, Message }
-    end, Listeners),
-    
-    Listeners.
 
 receive_event() ->
     receive 
@@ -184,11 +168,6 @@ blind_write(Pid, Command, Value) ->
     blind_write(Pid, Command, Value, []).
 blind_write(Pid, Command, Value, Options) ->
     Pid ! { write, nil, Command, Value, Options}.
-    
-add_listener(Pid, Listener) ->
-    Pid ! { add_listener, Listener, nil}.
-remove_listener(Pid, Listener) ->
-    Pid ! { remove_listener, Listener, nil}.
     
 key_query(Pid, Command) ->
     key_query(Pid, Command, nil).
@@ -266,16 +245,6 @@ failed_write_still_read_test() ->
     write(Pid, adsf, "blarg"),
     
     ?assertEqual( read(Pid), "woot" ).
-    
-events_on_change_test() ->
-    Pid = start(data_list, "key"),
-    write(Pid, rpush, 111),
-    write(Pid, rpush, 222),
-    
-    add_listener(Pid, self()),
-    write(Pid, rpush, 333),
-    Event = receive_event(),
-    ?assertEqual( {"key", data_list, rpush, 3}, Event ).
     
 blocking_write_test() ->
     Pid = start(data_list, "key"),
