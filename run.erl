@@ -1,5 +1,5 @@
 #! /usr/bin/env escript
-%%! -smp enable
+%! -smp enable
 
 % Whatever!
 
@@ -28,7 +28,7 @@ main(_) ->
     doit().
 
 doit() ->
-    RunCount = 1000,
+    RunCount = 10000,
 
     ListOfProcs = big_spawn(RunCount, fun(Count) -> 
                                            Pid = key:start(data_list, "mykey"),
@@ -39,11 +39,11 @@ doit() ->
     io:format("Length: ~p~n~n", [length(ListOfProcs)]),
     
     run_and_time("read              ", fun(I) -> key:read(I) end, ListOfProcs),
-    run_and_time("write->rpush      ", fun(I) -> key:write(I, rpush, 100) end, ListOfProcs),
+    run_and_time("write->rpush      ", fun(I) -> key:write(I, rpush, 1000) end, ListOfProcs),
     run_and_time("write->rpop       ", fun(I) -> key:write(I, rpop, nil) end, ListOfProcs),
-    run_and_time("write->lpush      ", fun(I) -> key:write(I, lpush, 100) end, ListOfProcs),
+    run_and_time("write->lpush      ", fun(I) -> key:write(I, lpush, 1000) end, ListOfProcs),
     run_and_time("write->lpop       ", fun(I) -> key:write(I, lpop, nil) end, ListOfProcs),
-    run_and_time("blind_write->rpush", fun(I) -> key:blind_write(I, rpush, 200) end, ListOfProcs),
+    run_and_time("blind_write->rpush", fun(I) -> key:blind_write(I, rpush, 1000) end, ListOfProcs),
     run_and_time("read              ", fun(I) -> key:read(I) end, ListOfProcs),
     wait(3000),
     run_and_time("read              ", fun(I) -> key:read(I) end, ListOfProcs),
